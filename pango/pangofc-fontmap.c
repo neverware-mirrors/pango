@@ -54,6 +54,7 @@
 #include "pango-impl-utils.h"
 #include "pango-enum-types.h"
 #include "pango-coverage-private.h"
+#include "pango-trace-private.h"
 #include <hb-ft.h>
 
 
@@ -826,11 +827,14 @@ match_in_thread (GTask        *task,
   ThreadData *td = task_data;
   FcResult result;
   FcPattern *match;
+  gint64 before = PANGO_TRACE_CURRENT_TIME;
 
   match = FcFontSetMatch (td->config,
                           &td->fonts, 1,
                           td->pattern,
                           &result);
+
+  pango_trace_mark (before, "FcFontSetMatch", NULL);
 
   g_mutex_lock (&td->patterns->mutex);
   td->patterns->match = match;
@@ -847,6 +851,7 @@ sort_in_thread (GTask        *task,
   ThreadData *td = task_data;
   FcResult result;
   FcFontSet *fontset;
+  gint64 before = PANGO_TRACE_CURRENT_TIME;
 
   fontset = FcFontSetSort (td->config,
                            &td->fonts, 1,
@@ -854,6 +859,8 @@ sort_in_thread (GTask        *task,
                            FcTrue,
                            NULL,
                            &result);
+
+  pango_trace_mark (before, "FcFontSetSort", NULL);
 
   g_mutex_lock (&td->patterns->mutex);
   td->patterns->fontset = fontset;
@@ -1007,15 +1014,24 @@ pango_fc_patterns_get_font_pattern (PangoFcPatterns *pats, int i, gboolean *prep
 
   if (i == 0)
     {
+      gint64 before = PANGO_TRACE_CURRENT_TIME;
+      gboolean waited = FALSE;
+
       g_mutex_lock (&pats->mutex);
 
       while (!pats->match && !pats->fontset)
-        g_cond_wait (&pats->cond, &pats->mutex);
+        {
+          waited = TRUE;
+          g_cond_wait (&pats->cond, &pats->mutex);
+        }
 
       match = pats->match;
       fontset = pats->fontset;
 
       g_mutex_unlock (&pats->mutex);
+
+      if (waited)
+        pango_trace_mark (before, "wait for FcFontMatch", NULL);
 
       if (match)
         {
@@ -1025,14 +1041,23 @@ pango_fc_patterns_get_font_pattern (PangoFcPatterns *pats, int i, gboolean *prep
     }
   else
     {
+      gint64 before = PANGO_TRACE_CURRENT_TIME;
+      gboolean waited = FALSE;
+
       g_mutex_lock (&pats->mutex);
 
       while (!pats->fontset)
-        g_cond_wait (&pats->cond, &pats->mutex);
+        {
+          waited = TRUE;
+          g_cond_wait (&pats->cond, &pats->mutex);
+        }
 
       fontset = pats->fontset;
 
       g_mutex_unlock (&pats->mutex);
+
+      if (waited)
+        pango_trace_mark (before, "wait for FcFontSort", NULL);
     }
 
   if (fontset)
@@ -1323,7 +1348,11 @@ init_in_thread (GTask        *task,
                 gpointer      task_data,
                 GCancellable *cancellable)
 {
+  gint64 before = PANGO_TRACE_CURRENT_TIME;
+
   FcInit ();
+
+  pango_trace_mark (before, "FcInit", NULL);
 
   g_mutex_lock (&fc_init_mutex);
   fc_initialized = TRUE;
@@ -1334,10 +1363,19 @@ init_in_thread (GTask        *task,
 static void
 wait_for_fc_init (void)
 {
+  gint64 before = PANGO_TRACE_CURRENT_TIME;
+  gboolean waited = FALSE;
+
   g_mutex_lock (&fc_init_mutex);
   while (!fc_initialized)
-    g_cond_wait (&fc_init_cond, &fc_init_mutex);
+    {
+      waited = TRUE;
+      g_cond_wait (&fc_init_cond, &fc_init_mutex);
+    }
   g_mutex_unlock (&fc_init_mutex);
+
+  if (waited)
+    pango_trace_mark (before, "wait for FcInit", NULL);
 }
 
 static void
